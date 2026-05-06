@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# Next.js (Frontend)
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/next-env.d.ts
+
+# NestJS (Backend)
+backend/dist/
+
+# Python (Analysis)
+analysis/venv/
+analysis/__pycache__/
+analysis/*.pyc
+analysis/models/*.joblib
+analysis/error_log.txt
+analysis/python_log.txt
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+backend/.env
+frontend/.env
+analysis/.env
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+py_log.txt
+next_log.txt
+backend/py_log.txt
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+
+# Data / Analysis results
+analysis_result.json
+blaze_sample.json
+
+# Testing
+coverage/
+
+# Typescript
+*.tsbuildinfo

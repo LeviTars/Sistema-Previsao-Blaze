@@ -1,0 +1,52 @@
+// ============================================================
+// Schema Prisma - Sistema de Previsão Blaze Double
+// ============================================================
+// Este schema define a estrutura do banco de dados PostgreSQL
+// hospedado no Supabase para armazenar os resultados do jogo Double.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Enum representando as três cores possíveis do jogo Double
+enum Color {
+  RED
+  BLACK
+  WHITE
+}
+
+/// Tabela principal para armazenar cada rodada (roll) do jogo Double
+model Roll {
+  /// Identificador único da rodada (UUID gerado automaticamente)
+  id         String   @id @default(uuid()) @db.Uuid
+
+  /// Cor do resultado da rodada
+  color      Color
+
+  /// Valor numérico que saiu na rodada (0-14)
+  /// 0 = WHITE, 1-7 = RED, 8-14 = BLACK
+  roll_value Int
+
+  /// Data e hora exata da rodada
+  timestamp  DateTime @default(now())
+
+  /// Server seed fornecido pela plataforma para verificação de justiça
+  /// NOTA: Esse campo será preenchido quando a API real da Blaze for conectada
+  server_seed String?
+
+  /// Hash da rodada para auditoria e prevenção de duplicatas
+  /// NOTA: Usar este campo como identificador único da rodada da Blaze
+  hash       String?  @unique
+
+  /// Índices para otimizar consultas frequentes
+  @@index([timestamp(sort: Desc)])
+  @@index([color])
+  @@index([timestamp, color])
+
+  @@map("rolls")
+}
