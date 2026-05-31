@@ -24,7 +24,6 @@ export default function StatsPanel({ analysis, isLoading }: StatsPanelProps) {
   const { 
     frequencies, 
     white_gap, 
-    current_streak, 
     total_analyzed, 
     market_state, 
     quantum_score, 

@@ -45,8 +45,49 @@ export interface Suggestion {
   kelly_fraction: number;
 }
 
+export interface Calibration {
+  method: string;
+  probability_calibrated: number;
+  sample_support: number;
+  is_calibrated: boolean;
+}
+
+export interface ModelVote {
+  model: string;
+  color: string;
+  probability: number;
+  support: number;
+}
+
+export interface PredictionStats {
+  total: number;
+  settled: number;
+  pending: number;
+  hits: number;
+  misses: number;
+  voids: number;
+  hit_rate: number;
+  last_100_hit_rate: number;
+  by_decision: Record<string, {
+    total: number;
+    settled: number;
+    hits: number;
+    hit_rate: number;
+  }>;
+  confidence_buckets: Record<string, {
+    total: number;
+    settled: number;
+    hits: number;
+    hit_rate: number;
+  }>;
+}
+
 export interface AnalysisData {
+  model_version: string;
+  analysis_status: "OK" | "DEGRADED";
   frequencies: Frequencies;
+  probabilities: Frequencies;
+  decision: "BET_RED" | "BET_BLACK" | "BET_WHITE" | "NO_BET";
   white_gap: number;
   current_streak: Streak;
   suggestion: Suggestion;
@@ -55,17 +96,24 @@ export interface AnalysisData {
   market_state: string;
   quantum_score: number;
   entropy: number;
+  calibration: Calibration;
+  model_votes: ModelVote[];
+  reason_codes: string[];
   seed_integrity: {
     status: string;
     score: number;
     message: string;
   };
+  based_on_latest_roll?: string;
+  analysis_generated_at?: string;
 }
 
 export interface AnalysisResponse {
   data: AnalysisData | null;
+  prediction_stats?: PredictionStats;
   warning?: string;
   error?: string;
+  cache?: "HIT" | "MISS";
 }
 
 // ============================================================

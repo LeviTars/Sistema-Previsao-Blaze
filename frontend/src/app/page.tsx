@@ -10,6 +10,7 @@ import {
   fetchAnalysis,
   type Roll,
   type AnalysisData,
+  type PredictionStats,
 } from "@/lib/api";
 
 const REFRESH_INTERVAL = 3000;
@@ -17,6 +18,7 @@ const REFRESH_INTERVAL = 3000;
 export default function DashboardPage() {
   const [rolls, setRolls] = useState<Roll[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisData | null>(null);
+  const [predictionStats, setPredictionStats] = useState<PredictionStats | null>(null);
   const [totalRolls, setTotalRolls] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -40,6 +42,7 @@ export default function DashboardPage() {
 
       if (analysisRes.status === "fulfilled" && analysisRes.value.data) {
         setAnalysis(analysisRes.value.data);
+        setPredictionStats(analysisRes.value.prediction_stats || null);
       }
 
       setLastUpdate(new Date());
@@ -101,6 +104,8 @@ export default function DashboardPage() {
               <PredictionCard
                 suggestion={analysis?.suggestion || null}
                 quantumScore={analysis?.quantum_score || 0}
+                analysis={analysis}
+                predictionStats={predictionStats}
                 isLoading={isLoading}
               />
             </div>

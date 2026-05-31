@@ -1,38 +1,34 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import axios from 'axios';
+import { PredictionsService } from '../predictions/predictions.service';
+import { PrismaService } from '../prisma/prisma.service';
 
-// ============================================================
-// COLLECTOR SERVICE - Worker de Coleta de Dados
-// ============================================================
-// Este serviço roda em background com setInterval, coletando
-// dados da API da Blaze (ou do mock) e salvando no banco.
-//
-// FORMATO DA API REAL DA BLAZE:
-//   URL: https://blaze.bet.br/api/singleplayer-originals/originals/roulette_games/recent/history/1?...
-//   Response: { "records": [{ "id": "xxx", "created_at": "...", "color": 2, "roll": 13, "server_seed": "..." }] }
-//   Cores numéricas: 0 = WHITE, 1 = RED, 2 = BLACK
-//
-// FORMATO DO MOCK (interno):
-//   URL: http://localhost:3001/blaze/history
-//   Response: [{ "id": "uuid", "color": "RED", "roll_value": 5, "timestamp": "...", "hash": "..." }]
-//
-// O collector detecta automaticamente qual formato está sendo usado.
-// ============================================================
-
-// Mapeamento de cor numérica da Blaze para o enum do sistema
 const BLAZE_COLOR_MAP: Record<number, 'RED' | 'BLACK' | 'WHITE'> = {
   0: 'WHITE',
   1: 'RED',
   2: 'BLACK',
 };
 
+type RawRecord = Record<string, unknown>;
+
 interface ParsedRoll {
+  external_id: string | null;
+  source: string;
   color: 'RED' | 'BLACK' | 'WHITE';
   roll_value: number;
   timestamp: Date;
   hash: string | null;
   server_seed: string | null;
+  seed_hash: string | null;
+  round_status: string | null;
+  sequence_number: number | null;
+  raw_payload: RawRecord;
 }
 
 @Injectable()
@@ -41,46 +37,50 @@ export class CollectorService implements OnModuleInit, OnModuleDestroy {
   private intervalId: NodeJS.Timeout | null = null;
   private readonly blazeApiUrl: string;
   private readonly intervalMs: number;
+  private readonly source: string;
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly predictionsService: PredictionsService,
+  ) {
     this.blazeApiUrl =
       process.env.BLAZE_API_URL || 'http://localhost:3001/blaze/history';
     this.intervalMs = parseInt(
       process.env.COLLECTOR_INTERVAL_MS || '30000',
       10,
     );
+    this.source =
+      process.env.COLLECTOR_SOURCE ||
+      (this.blazeApiUrl.includes('localhost') ? 'mock' : 'blaze');
   }
 
   onModuleInit() {
     this.logger.log(
-      `🔄 Iniciando coleta a cada ${this.intervalMs / 1000}s de: ${this.blazeApiUrl}`,
+      `Iniciando coleta a cada ${this.intervalMs / 1000}s de: ${this.blazeApiUrl}`,
     );
-    // Aguarda 5 segundos para garantir que o servidor esteja pronto
     setTimeout(() => {
-      this.collectData();
-      this.intervalId = setInterval(() => this.collectData(), this.intervalMs);
+      void this.collectData();
+      this.intervalId = setInterval(() => {
+        void this.collectData();
+      }, this.intervalMs);
     }, 5000);
   }
 
   onModuleDestroy() {
     if (this.intervalId) {
       clearInterval(this.intervalId);
-      this.logger.log('⏹ Coleta de dados encerrada');
+      this.logger.log('Coleta de dados encerrada');
     }
   }
 
-  /**
-   * Busca dados da API e salva no banco, sem duplicatas.
-   */
   private async collectData(): Promise<void> {
     try {
-      const response = await axios.get(this.blazeApiUrl, { timeout: 15000 });
-      const rawData = response.data;
+      const response = await axios.get<unknown>(this.blazeApiUrl, {
+        timeout: 15000,
+      });
+      const rolls = this.parseResponse(response.data);
 
-      // Detectar formato da resposta e parsear
-      const rolls = this.parseResponse(rawData);
-
-      if (!rolls || rolls.length === 0) {
+      if (rolls.length === 0) {
         this.logger.debug('Nenhuma rodada nova para processar');
         return;
       }
@@ -89,78 +89,177 @@ export class CollectorService implements OnModuleInit, OnModuleDestroy {
 
       for (const roll of rolls) {
         try {
-          // Verificar duplicata pelo hash ou pelo id (server_seed para a API real)
-          const hashToCheck = roll.hash || roll.server_seed;
-          if (hashToCheck) {
-            const existing = await this.prisma.roll.findUnique({
-              where: { hash: hashToCheck },
-            });
-            if (existing) continue;
-          }
+          if (!this.isValidRoll(roll)) continue;
+
+          const existing = await this.findExistingRoll(roll);
+          if (existing) continue;
 
           await this.prisma.roll.create({
             data: {
+              external_id: roll.external_id || undefined,
+              source: roll.source,
               color: roll.color,
               roll_value: roll.roll_value,
               timestamp: roll.timestamp,
               hash: roll.hash || roll.server_seed || undefined,
               server_seed: roll.server_seed || undefined,
+              seed_hash: roll.seed_hash || undefined,
+              round_status: roll.round_status || undefined,
+              sequence_number: roll.sequence_number || undefined,
+              raw_payload: this.toJson(roll.raw_payload),
             },
           });
           newCount++;
-        } catch (innerError: any) {
-          // Ignora erros de duplicata (unique constraint violation)
-          if (innerError.code !== 'P2002') {
-            this.logger.warn(`Erro ao salvar rodada: ${innerError.message}`);
+        } catch (error: unknown) {
+          if (!this.isPrismaDuplicate(error)) {
+            this.logger.warn(
+              `Erro ao salvar rodada: ${this.errorMessage(error)}`,
+            );
           }
         }
       }
 
       if (newCount > 0) {
         this.logger.log(
-          `✅ ${newCount} novas rodadas salvas (de ${rolls.length} recebidas)`,
+          `${newCount} novas rodadas salvas (de ${rolls.length} recebidas)`,
         );
+        await this.predictionsService.reconcilePending();
       }
-    } catch (error: any) {
-      this.logger.error(`❌ Erro na coleta: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`Erro na coleta: ${this.errorMessage(error)}`);
     }
   }
 
-  /**
-   * Detecta o formato da resposta e retorna um array normalizado de ParsedRoll.
-   *
-   * Suporta:
-   * 1. API Real da Blaze: { records: [{ id, created_at, color (number), roll, server_seed }] }
-   * 2. Mock interno: [{ id, color (string), roll_value, timestamp, hash, server_seed }]
-   */
-  private parseResponse(data: any): ParsedRoll[] {
-    // Formato 1: API Real da Blaze (response.records é array)
-    if (data && typeof data === 'object' && Array.isArray(data.records)) {
-      this.logger.debug(`Formato detectado: API Real da Blaze (${data.records.length} records)`);
-      return data.records.map((record: any) => ({
-        color: BLAZE_COLOR_MAP[record.color] || 'RED',
-        roll_value: record.roll ?? 0,
-        timestamp: new Date(record.created_at || Date.now()),
-        hash: record.server_seed || record.id || null,
-        server_seed: record.server_seed || null,
-      }));
+  private parseResponse(data: unknown): ParsedRoll[] {
+    if (this.isRecord(data) && Array.isArray(data.records)) {
+      this.logger.debug(
+        `Formato detectado: API Real da Blaze (${data.records.length} records)`,
+      );
+      return data.records
+        .filter((record): record is RawRecord => this.isRecord(record))
+        .map((record) => this.parseBlazeRecord(record));
     }
 
-    // Formato 2: Mock interno (array direto)
     if (Array.isArray(data)) {
-      this.logger.debug(`Formato detectado: Mock interno (${data.length} rolls)`);
-      return data.map((roll: any) => ({
-        color: roll.color as 'RED' | 'BLACK' | 'WHITE',
-        roll_value: roll.roll_value ?? 0,
-        timestamp: new Date(roll.timestamp || Date.now()),
-        hash: roll.hash || null,
-        server_seed: roll.server_seed || null,
-      }));
+      this.logger.debug(
+        `Formato detectado: Mock interno (${data.length} rolls)`,
+      );
+      return data
+        .filter((record): record is RawRecord => this.isRecord(record))
+        .map((record) => this.parseMockRecord(record));
     }
 
     this.logger.warn(
-      `Formato de resposta não reconhecido: ${JSON.stringify(data).substring(0, 200)}`,
+      `Formato de resposta nao reconhecido: ${JSON.stringify(data).substring(0, 200)}`,
     );
     return [];
+  }
+
+  private parseBlazeRecord(record: RawRecord): ParsedRoll {
+    const colorCode = this.readNumber(record.color);
+    return {
+      external_id: this.readString(record.id),
+      source: this.source,
+      color: BLAZE_COLOR_MAP[colorCode ?? -1] || 'RED',
+      roll_value: this.readNumber(record.roll) ?? 0,
+      timestamp: new Date(this.readString(record.created_at) || Date.now()),
+      hash: this.readString(record.hash),
+      server_seed: this.readString(record.server_seed),
+      seed_hash: this.readString(record.server_seed_hash),
+      round_status: this.readString(record.status),
+      sequence_number: this.readNumber(record.nonce),
+      raw_payload: record,
+    };
+  }
+
+  private parseMockRecord(record: RawRecord): ParsedRoll {
+    return {
+      external_id: this.readString(record.id),
+      source: this.source,
+      color: this.normalizeColor(this.readString(record.color)),
+      roll_value: this.readNumber(record.roll_value) ?? 0,
+      timestamp: new Date(this.readString(record.timestamp) || Date.now()),
+      hash: this.readString(record.hash),
+      server_seed: this.readString(record.server_seed),
+      seed_hash: this.readString(record.seed_hash),
+      round_status: this.readString(record.status),
+      sequence_number: this.readNumber(record.sequence_number),
+      raw_payload: record,
+    };
+  }
+
+  private async findExistingRoll(roll: ParsedRoll) {
+    if (roll.external_id) {
+      const existingByExternalId = await this.prisma.roll.findUnique({
+        where: {
+          source_external_id: {
+            source: roll.source,
+            external_id: roll.external_id,
+          },
+        },
+      });
+      if (existingByExternalId) return existingByExternalId;
+    }
+
+    const hashToCheck = roll.hash || roll.server_seed;
+    if (!hashToCheck) return null;
+
+    return this.prisma.roll.findUnique({
+      where: { hash: hashToCheck },
+    });
+  }
+
+  private isValidRoll(roll: ParsedRoll): boolean {
+    if (Number.isNaN(roll.timestamp.getTime())) {
+      this.logger.warn('Rodada ignorada: timestamp invalido');
+      return false;
+    }
+
+    const colorMatchesValue =
+      (roll.color === 'WHITE' && roll.roll_value === 0) ||
+      (roll.color === 'RED' && roll.roll_value >= 1 && roll.roll_value <= 7) ||
+      (roll.color === 'BLACK' && roll.roll_value >= 8 && roll.roll_value <= 14);
+
+    if (!colorMatchesValue) {
+      this.logger.warn(
+        `Rodada ignorada: cor/numero inconsistente (${roll.color}/${roll.roll_value})`,
+      );
+      return false;
+    }
+
+    return true;
+  }
+
+  private normalizeColor(color: string | null): 'RED' | 'BLACK' | 'WHITE' {
+    if (color === 'BLACK' || color === 'WHITE') return color;
+    return 'RED';
+  }
+
+  private readString(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  }
+
+  private readNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  private isRecord(value: unknown): value is RawRecord {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private isPrismaDuplicate(error: unknown): boolean {
+    return (
+      this.isRecord(error) &&
+      typeof error.code === 'string' &&
+      error.code === 'P2002'
+    );
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private toJson(value: unknown): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
   }
 }

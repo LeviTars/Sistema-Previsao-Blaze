@@ -5,6 +5,7 @@ import { HistoryModule } from './history/history.module';
 import { AnalysisModule } from './analysis/analysis.module';
 import { CollectorModule } from './collector/collector.module';
 import { MockModule } from './mock/mock.module';
+import { PredictionsModule } from './predictions/predictions.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { MockModule } from './mock/mock.module';
     PrismaModule,
     HistoryModule,
     AnalysisModule,
+    PredictionsModule,
     CollectorModule,
     MockModule,
   ],

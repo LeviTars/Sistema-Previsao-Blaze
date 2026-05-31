@@ -1,9 +1,3 @@
-// ============================================================
-// Schema Prisma - Sistema de Previsão Blaze Double
-// ============================================================
-// Este schema define a estrutura do banco de dados PostgreSQL
-// hospedado no Supabase para armazenar os resultados do jogo Double.
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,6 +7,79 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Tabela principal para armazenar cada rodada (roll) do jogo Double
+model Roll {
+  /// Identificador único da rodada (UUID gerado automaticamente)
+  id          String   @id @default(uuid()) @db.Uuid
+  /// Identificador original da fonte externa, quando existir
+  external_id String?
+  /// Origem do dado: mock, blaze, import, etc.
+  source      String   @default("unknown")
+  /// Cor do resultado da rodada
+  color       Color
+  /// Valor numérico que saiu na rodada (0-14)
+  /// 0 = WHITE, 1-7 = RED, 8-14 = BLACK
+  roll_value  Int
+  /// Data e hora exata da rodada
+  timestamp   DateTime @default(now())
+  /// Data e hora em que a rodada foi coletada pelo sistema
+  collected_at DateTime @default(now())
+  /// Server seed fornecido pela plataforma para verificação de justiça
+  /// NOTA: Esse campo será preenchido quando a API real da Blaze for conectada
+  server_seed String?
+  /// Hash de seed, quando a fonte fornecer separadamente
+  seed_hash   String?
+  /// Hash da rodada para auditoria e prevenção de duplicatas
+  /// NOTA: Usar este campo como identificador único da rodada da Blaze
+  hash        String?  @unique
+  /// Status bruto da rodada na fonte, quando existir
+  round_status String?
+  /// Sequência numérica da fonte, quando existir
+  sequence_number Int?
+  /// Payload bruto recebido da fonte para auditoria/reprocessamento
+  raw_payload Json?
+
+  predictions_based_on Prediction[] @relation("BaseRoll")
+  predictions_target   Prediction[] @relation("TargetRoll")
+
+  @@unique([source, external_id])
+  @@index([timestamp(sort: Desc)])
+  @@index([color])
+  @@index([timestamp, color])
+  @@index([source, timestamp])
+  @@map("rolls")
+}
+
+/// Previsão emitida pelo sistema, registrada antes da rodada alvo ser conhecida
+model Prediction {
+  id                    String            @id @default(uuid()) @db.Uuid
+  created_at            DateTime          @default(now())
+  model_version         String
+  base_roll_id          String            @db.Uuid
+  target_roll_id        String?           @db.Uuid
+  predicted_color       Color?
+  prob_red              Float
+  prob_black            Float
+  prob_white            Float
+  confidence_raw        Float
+  confidence_calibrated Float?
+  decision              PredictionDecision
+  reason_codes          Json?
+  model_votes           Json?
+  result_color          Color?
+  outcome               PredictionOutcome @default(PENDING)
+  settled_at            DateTime?
+
+  base_roll   Roll  @relation("BaseRoll", fields: [base_roll_id], references: [id])
+  target_roll Roll? @relation("TargetRoll", fields: [target_roll_id], references: [id])
+
+  @@unique([model_version, base_roll_id])
+  @@index([created_at(sort: Desc)])
+  @@index([model_version])
+  @@index([outcome])
+  @@map("predictions")
+}
+
 /// Enum representando as três cores possíveis do jogo Double
 enum Color {
   RED
@@ -20,33 +87,16 @@ enum Color {
   WHITE
 }
 
-/// Tabela principal para armazenar cada rodada (roll) do jogo Double
-model Roll {
-  /// Identificador único da rodada (UUID gerado automaticamente)
-  id         String   @id @default(uuid()) @db.Uuid
+enum PredictionDecision {
+  BET_RED
+  BET_BLACK
+  BET_WHITE
+  NO_BET
+}
 
-  /// Cor do resultado da rodada
-  color      Color
-
-  /// Valor numérico que saiu na rodada (0-14)
-  /// 0 = WHITE, 1-7 = RED, 8-14 = BLACK
-  roll_value Int
-
-  /// Data e hora exata da rodada
-  timestamp  DateTime @default(now())
-
-  /// Server seed fornecido pela plataforma para verificação de justiça
-  /// NOTA: Esse campo será preenchido quando a API real da Blaze for conectada
-  server_seed String?
-
-  /// Hash da rodada para auditoria e prevenção de duplicatas
-  /// NOTA: Usar este campo como identificador único da rodada da Blaze
-  hash       String?  @unique
-
-  /// Índices para otimizar consultas frequentes
-  @@index([timestamp(sort: Desc)])
-  @@index([color])
-  @@index([timestamp, color])
-
-  @@map("rolls")
+enum PredictionOutcome {
+  PENDING
+  HIT
+  MISS
+  VOID
 }
